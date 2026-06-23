@@ -1,0 +1,252 @@
+// prisma/schema.prisma
+// Database Architecture for Optical ERP
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------
+// User & Role Management
+// -----------------------------------------
+
+enum Role {
+  ADMIN
+  MANAGER
+  OPTOMETRIST
+  SALES_STAFF
+}
+
+model User {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  email     String   @unique
+  password  String   // Hashed password
+  role      Role     @default(SALES_STAFF)
+  branchId  String   @db.ObjectId
+  branch    Branch   @relation(fields: [branchId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Auditing relations
+  labAudits LabAudit[]
+  invoices  Invoice[]
+}
+
+// -----------------------------------------
+// Branch Management (Multi-Branch Mapping)
+// -----------------------------------------
+
+model Branch {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  address     String
+  city        String
+  state       String   // Used for CGST/SGST vs IGST calculation
+  gstNumber   String?  // Branch GSTIN
+  phone       String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users       User[]
+  inventory   Inventory[]
+  invoices    Invoice[]
+  labOrders   LabOrder[]
+}
+
+// -----------------------------------------
+// Patient Management & Optometrist Rx Tracking
+// -----------------------------------------
+
+model Patient {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  phone     String   @unique
+  email     String?
+  age       Int?
+  gender    String?
+  address   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  prescriptions Prescription[]
+  invoices      Invoice[]
+}
+
+model Prescription {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  patientId   String   @db.ObjectId
+  patient     Patient  @relation(fields: [patientId], references: [id])
+
+  // Right Eye (RE) Parameters
+  reSph       Float?
+  reCyl       Float?
+  reAxis      Int?
+  reAdd       Float?
+  rePd        Float?
+  reVa        String?  // Visual Acuity
+
+  // Left Eye (LE) Parameters
+  leSph       Float?
+  leCyl       Float?
+  leAxis      Int?
+  leAdd       Float?
+  lePd        Float?
+  leVa        String?
+
+  notes       String?
+  examinedBy  String?  // Optometrist Name/ID
+  createdAt   DateTime @default(now())
+
+  labOrders   LabOrder[]
+}
+
+// -----------------------------------------
+// Inventory & Stock Aging Control
+// -----------------------------------------
+
+enum ItemCategory {
+  FRAME
+  LENS
+  CONTACT_LENS
+  ACCESSORY
+}
+
+model Inventory {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  branchId     String   @db.ObjectId
+  branch       Branch   @relation(fields: [branchId], references: [id])
+
+  name         String   // E.g., "Ray-Ban Aviator 3025" or "Crizal Prevencia 1.56"
+  category     ItemCategory
+  sku          String   @unique // Stock Keeping Unit / Barcode
+  batchNumber  String?
+
+  supplierName String?
+  purchaseDate DateTime @default(now()) // Crucial for Stock Aging (0-30, 31-60, etc.)
+
+  costPrice    Float
+  sellingPrice Float
+  hsnCode      String   // Harmonized System of Nomenclature code for Indian GST
+  taxRate      Float    // e.g., 12 or 18 (percentage)
+
+  quantity     Int      @default(0)
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  invoiceItems InvoiceItem[]
+}
+
+// -----------------------------------------
+// Billing & Invoice (Indian Tax Compliance)
+// -----------------------------------------
+
+enum PaymentMode {
+  CASH
+  UPI
+  CARD
+  MIXED
+}
+
+model Invoice {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  invoiceNumber  String   @unique // Formatted string like "INV-BR1-2023-0001"
+  branchId       String   @db.ObjectId
+  branch         Branch   @relation(fields: [branchId], references: [id])
+  patientId      String?  @db.ObjectId // Optional for walk-in accessories
+  patient        Patient? @relation(fields: [patientId], references: [id])
+  salesPersonId  String   @db.ObjectId
+  salesPerson    User     @relation(fields: [salesPersonId], references: [id])
+
+  subTotal       Float
+  totalDiscount  Float    @default(0)
+
+  // Tax splitting
+  cgstTotal      Float    @default(0) // Central GST
+  sgstTotal      Float    @default(0) // State GST
+  igstTotal      Float    @default(0) // Integrated GST (Inter-state)
+
+  grandTotal     Float
+
+  paymentMode    PaymentMode
+  paymentRef     String?  // UPI Ref or Card Trx ID
+
+  createdAt      DateTime @default(now())
+
+  items          InvoiceItem[]
+}
+
+model InvoiceItem {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  invoiceId   String    @db.ObjectId
+  invoice     Invoice   @relation(fields: [invoiceId], references: [id])
+
+  inventoryId String    @db.ObjectId
+  inventory   Inventory @relation(fields: [inventoryId], references: [id])
+
+  quantity    Int
+  unitPrice   Float
+  discount    Float     @default(0)
+
+  // Tax for this specific item (based on HSN)
+  cgstAmount  Float     @default(0)
+  sgstAmount  Float     @default(0)
+  igstAmount  Float     @default(0)
+
+  total       Float
+}
+
+// -----------------------------------------
+// Lab Order Tracking (State Machine)
+// -----------------------------------------
+
+enum LabOrderStatus {
+  ORDER_PLACED
+  SENT_TO_LAB
+  IN_PROGRESS
+  RECEIVED_FROM_LAB
+  FITTING_IN_PROGRESS
+  READY_FOR_DELIVERY
+  DELIVERED
+}
+
+model LabOrder {
+  id             String         @id @default(auto()) @map("_id") @db.ObjectId
+  orderNumber    String         @unique
+  branchId       String         @db.ObjectId
+  branch         Branch         @relation(fields: [branchId], references: [id])
+
+  prescriptionId String         @db.ObjectId
+  prescription   Prescription   @relation(fields: [prescriptionId], references: [id])
+
+  frameDetails   String?        // What frame is being used
+  lensDetails    String         // E.g., "KODAK 1.56 SV BlueCut"
+  externalLabName String?       // If sent out
+
+  status         LabOrderStatus @default(ORDER_PLACED)
+  expectedDate   DateTime?
+
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  auditLogs      LabAudit[]
+}
+
+model LabAudit {
+  id         String         @id @default(auto()) @map("_id") @db.ObjectId
+  labOrderId String         @db.ObjectId
+  labOrder   LabOrder       @relation(fields: [labOrderId], references: [id])
+
+  status     LabOrderStatus
+  notes      String?
+
+  updatedById String        @db.ObjectId
+  updatedBy   User          @relation(fields: [updatedById], references: [id])
+
+  createdAt  DateTime       @default(now())
+}
