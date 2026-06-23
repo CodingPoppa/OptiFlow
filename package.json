@@ -17,5 +17,11 @@
   "bugs": {
     "url": "https://github.com/CodingPoppa/OptiFlow/issues"
   },
-  "homepage": "https://github.com/CodingPoppa/OptiFlow#readme"
+  "homepage": "https://github.com/CodingPoppa/OptiFlow#readme",
+  "dependencies": {
+    "@prisma/client": "^5.22.0"
+  },
+  "devDependencies": {
+    "prisma": "^5.22.0"
+  }
 }
